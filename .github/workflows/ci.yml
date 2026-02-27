@@ -78,6 +78,9 @@ jobs:
             task: lint
             command: pnpm build && pnpm lint
           - runtime: node
+            task: coverage
+            command: pnpm canvas:a2ui:bundle && pnpm test::coverage
+          - runtime: node
             task: test
             command: pnpm canvas:a2ui:bundle && pnpm test
           - runtime: node
@@ -199,6 +202,9 @@ jobs:
           - runtime: node
             task: test
             command: pnpm canvas:a2ui:bundle && pnpm test
+          - runtime: node
+            task: coverage
+            command: pnpm canvas:a2ui:bundle && pnpm test:coverage
           - runtime: node
             task: protocol
             command: pnpm protocol:check
