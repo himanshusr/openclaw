@@ -57,6 +57,47 @@ import {
 } from "./onboard-auth.js";
 import { OPENCODE_ZEN_DEFAULT_MODEL } from "./opencode-zen-model-default.js";
 
+/**
+ * Shared credential acquisition flow used by simple API-key providers.
+ * Checks CLI opts first, then env, then prompts interactively.
+ */
+async function acquireSimpleApiKey(params: {
+  tokenProvider: string;
+  envProvider: string;
+  promptMessage: string;
+  setApiKey: (key: string, agentDir: string) => Promise<void>;
+  agentDir: string;
+  opts?: ApplyAuthChoiceParams["opts"];
+  prompter: ApplyAuthChoiceParams["prompter"];
+}): Promise<void> {
+  let hasCredential = false;
+
+  if (params.opts?.token && params.opts.tokenProvider === params.tokenProvider) {
+    await params.setApiKey(normalizeApiKeyInput(params.opts.token), params.agentDir);
+    hasCredential = true;
+  }
+
+  const envKey = resolveEnvApiKey(params.envProvider);
+  if (!hasCredential && envKey) {
+    const useExisting = await params.prompter.confirm({
+      message: `Use existing ${envKey.source} (${formatApiKeyPreview(envKey.apiKey)})?`,
+      initialValue: true,
+    });
+    if (useExisting) {
+      await params.setApiKey(envKey.apiKey, params.agentDir);
+      hasCredential = true;
+    }
+  }
+
+  if (!hasCredential) {
+    const key = await params.prompter.text({
+      message: params.promptMessage,
+      validate: validateApiKeyInput,
+    });
+    await params.setApiKey(normalizeApiKeyInput(String(key)), params.agentDir);
+  }
+}
+
 export async function applyAuthChoiceApiProviders(
   params: ApplyAuthChoiceParams,
 ): Promise<ApplyAuthChoiceResult | null> {
@@ -337,31 +378,15 @@ export async function applyAuthChoiceApiProviders(
   }
 
   if (authChoice === "moonshot-api-key") {
-    let hasCredential = false;
-
-    if (!hasCredential && params.opts?.token && params.opts?.tokenProvider === "moonshot") {
-      await setMoonshotApiKey(normalizeApiKeyInput(params.opts.token), params.agentDir);
-      hasCredential = true;
-    }
-
-    const envKey = resolveEnvApiKey("moonshot");
-    if (envKey) {
-      const useExisting = await params.prompter.confirm({
-        message: `Use existing MOONSHOT_API_KEY (${envKey.source}, ${formatApiKeyPreview(envKey.apiKey)})?`,
-        initialValue: true,
-      });
-      if (useExisting) {
-        await setMoonshotApiKey(envKey.apiKey, params.agentDir);
-        hasCredential = true;
-      }
-    }
-    if (!hasCredential) {
-      const key = await params.prompter.text({
-        message: "Enter Moonshot API key",
-        validate: validateApiKeyInput,
-      });
-      await setMoonshotApiKey(normalizeApiKeyInput(String(key)), params.agentDir);
-    }
+    await acquireSimpleApiKey({
+      tokenProvider: "moonshot",
+      envProvider: "moonshot",
+      promptMessage: "Enter Moonshot API key",
+      setApiKey: setMoonshotApiKey,
+      agentDir: params.agentDir,
+      opts: params.opts,
+      prompter: params.prompter,
+    });
     nextConfig = applyAuthProfileConfig(nextConfig, {
       profileId: "moonshot:default",
       provider: "moonshot",
@@ -602,31 +627,15 @@ export async function applyAuthChoiceApiProviders(
   }
 
   if (authChoice === "xiaomi-api-key") {
-    let hasCredential = false;
-
-    if (!hasCredential && params.opts?.token && params.opts?.tokenProvider === "xiaomi") {
-      await setXiaomiApiKey(normalizeApiKeyInput(params.opts.token), params.agentDir);
-      hasCredential = true;
-    }
-
-    const envKey = resolveEnvApiKey("xiaomi");
-    if (envKey) {
-      const useExisting = await params.prompter.confirm({
-        message: `Use existing XIAOMI_API_KEY (${envKey.source}, ${formatApiKeyPreview(envKey.apiKey)})?`,
-        initialValue: true,
-      });
-      if (useExisting) {
-        await setXiaomiApiKey(envKey.apiKey, params.agentDir);
-        hasCredential = true;
-      }
-    }
-    if (!hasCredential) {
-      const key = await params.prompter.text({
-        message: "Enter Xiaomi API key",
-        validate: validateApiKeyInput,
-      });
-      await setXiaomiApiKey(normalizeApiKeyInput(String(key)), params.agentDir);
-    }
+    await acquireSimpleApiKey({
+      tokenProvider: "xiaomi",
+      envProvider: "xiaomi",
+      promptMessage: "Enter Xiaomi API key",
+      setApiKey: setXiaomiApiKey,
+      agentDir: params.agentDir,
+      opts: params.opts,
+      prompter: params.prompter,
+    });
     nextConfig = applyAuthProfileConfig(nextConfig, {
       profileId: "xiaomi:default",
       provider: "xiaomi",
