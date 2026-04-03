@@ -158,15 +158,13 @@ function normalizeVersionTag(tag: string): string | null {
   return parseSemver(cleaned) ? cleaned : null;
 }
 
-async function readPackageVersion(root: string): Promise<string | null> {
-  try {
-    const raw = await fs.readFile(path.join(root, "package.json"), "utf-8");
-    const parsed = JSON.parse(raw) as { version?: string };
-    return typeof parsed.version === "string" ? parsed.version : null;
-  } catch {
-    return null;
-  }
-}
+import {
+  readPackageVersion,
+  readPackageName,
+  isGitCheckout,
+  isCorePackage,
+  pathExists,
+} from "./update-utils.js";
 
 async function resolveTargetVersion(tag: string, timeoutMs?: number): Promise<string | null> {
   const direct = normalizeVersionTag(tag);
@@ -175,40 +173,6 @@ async function resolveTargetVersion(tag: string, timeoutMs?: number): Promise<st
   }
   const res = await fetchNpmTagVersion({ tag, timeoutMs });
   return res.version ?? null;
-}
-
-async function isGitCheckout(root: string): Promise<boolean> {
-  try {
-    await fs.stat(path.join(root, ".git"));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function readPackageName(root: string): Promise<string | null> {
-  try {
-    const raw = await fs.readFile(path.join(root, "package.json"), "utf-8");
-    const parsed = JSON.parse(raw) as { name?: string };
-    const name = parsed?.name?.trim();
-    return name ? name : null;
-  } catch {
-    return null;
-  }
-}
-
-async function isCorePackage(root: string): Promise<boolean> {
-  const name = await readPackageName(root);
-  return Boolean(name && CORE_PACKAGE_NAMES.has(name));
-}
-
-async function pathExists(targetPath: string): Promise<boolean> {
-  try {
-    await fs.stat(targetPath);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function tryWriteCompletionCache(root: string, jsonMode: boolean): Promise<void> {
