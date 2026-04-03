@@ -58,6 +58,31 @@ function normalizeExecAsk(raw: string): "off" | "on-miss" | "always" | undefined
   return undefined;
 }
 
+function applyNormalizedPatchField(
+  entry: Record<string, unknown>,
+  patch: Record<string, unknown>,
+  field: string,
+  normalize: (raw: string) => string | undefined,
+  errorMsg: string,
+  deleteOnValues?: string[],
+): { ok: true } | { ok: false; error: ErrorShape } {
+  if (!(field in patch)) return { ok: true };
+  const raw = patch[field];
+  if (raw === null) {
+    delete entry[field];
+    return { ok: true };
+  }
+  if (raw === undefined) return { ok: true };
+  const normalized = normalize(String(raw));
+  if (!normalized) return invalid(errorMsg);
+  if (deleteOnValues?.includes(normalized)) {
+    delete entry[field];
+  } else {
+    entry[field] = normalized;
+  }
+  return { ok: true };
+}
+
 export async function applySessionsPatchToStore(params: {
   cfg: OpenClawConfig;
   store: Record<string, SessionEntry>;
@@ -78,6 +103,9 @@ export async function applySessionsPatchToStore(params: {
         updatedAt: Math.max(existing.updatedAt ?? 0, now),
       }
     : { sessionId: randomUUID(), updatedAt: now };
+
+  const entryRec = next as unknown as Record<string, unknown>;
+  const patchRec = patch as unknown as Record<string, unknown>;
 
   if ("spawnedBy" in patch) {
     const raw = patch.spawnedBy;
@@ -151,91 +179,40 @@ export async function applySessionsPatchToStore(params: {
     applyVerboseOverride(next, parsed.value);
   }
 
-  if ("reasoningLevel" in patch) {
-    const raw = patch.reasoningLevel;
-    if (raw === null) {
-      delete next.reasoningLevel;
-    } else if (raw !== undefined) {
-      const normalized = normalizeReasoningLevel(String(raw));
-      if (!normalized) {
-        return invalid('invalid reasoningLevel (use "on"|"off"|"stream")');
-      }
-      if (normalized === "off") {
-        delete next.reasoningLevel;
-      } else {
-        next.reasoningLevel = normalized;
-      }
-    }
+  {
+    const r = applyNormalizedPatchField(entryRec, patchRec, "reasoningLevel",
+      normalizeReasoningLevel, 'invalid reasoningLevel (use "on"|"off"|"stream")', ["off"]);
+    if (!r.ok) return r;
   }
 
-  if ("responseUsage" in patch) {
-    const raw = patch.responseUsage;
-    if (raw === null) {
-      delete next.responseUsage;
-    } else if (raw !== undefined) {
-      const normalized = normalizeUsageDisplay(String(raw));
-      if (!normalized) {
-        return invalid('invalid responseUsage (use "off"|"tokens"|"full")');
-      }
-      if (normalized === "off") {
-        delete next.responseUsage;
-      } else {
-        next.responseUsage = normalized;
-      }
-    }
+  {
+    const r = applyNormalizedPatchField(entryRec, patchRec, "responseUsage",
+      normalizeUsageDisplay, 'invalid responseUsage (use "off"|"tokens"|"full")', ["off"]);
+    if (!r.ok) return r;
   }
 
-  if ("elevatedLevel" in patch) {
-    const raw = patch.elevatedLevel;
-    if (raw === null) {
-      delete next.elevatedLevel;
-    } else if (raw !== undefined) {
-      const normalized = normalizeElevatedLevel(String(raw));
-      if (!normalized) {
-        return invalid('invalid elevatedLevel (use "on"|"off"|"ask"|"full")');
-      }
-      // Persist "off" explicitly so patches can override defaults.
-      next.elevatedLevel = normalized;
-    }
+  {
+    const r = applyNormalizedPatchField(entryRec, patchRec, "elevatedLevel",
+      normalizeElevatedLevel, 'invalid elevatedLevel (use "on"|"off"|"ask"|"full")');
+    if (!r.ok) return r;
   }
 
-  if ("execHost" in patch) {
-    const raw = patch.execHost;
-    if (raw === null) {
-      delete next.execHost;
-    } else if (raw !== undefined) {
-      const normalized = normalizeExecHost(String(raw));
-      if (!normalized) {
-        return invalid('invalid execHost (use "sandbox"|"gateway"|"node")');
-      }
-      next.execHost = normalized;
-    }
+  {
+    const r = applyNormalizedPatchField(entryRec, patchRec, "execHost",
+      normalizeExecHost, 'invalid execHost (use "sandbox"|"gateway"|"node")');
+    if (!r.ok) return r;
   }
 
-  if ("execSecurity" in patch) {
-    const raw = patch.execSecurity;
-    if (raw === null) {
-      delete next.execSecurity;
-    } else if (raw !== undefined) {
-      const normalized = normalizeExecSecurity(String(raw));
-      if (!normalized) {
-        return invalid('invalid execSecurity (use "deny"|"allowlist"|"full")');
-      }
-      next.execSecurity = normalized;
-    }
+  {
+    const r = applyNormalizedPatchField(entryRec, patchRec, "execSecurity",
+      normalizeExecSecurity, 'invalid execSecurity (use "deny"|"allowlist"|"full")');
+    if (!r.ok) return r;
   }
 
-  if ("execAsk" in patch) {
-    const raw = patch.execAsk;
-    if (raw === null) {
-      delete next.execAsk;
-    } else if (raw !== undefined) {
-      const normalized = normalizeExecAsk(String(raw));
-      if (!normalized) {
-        return invalid('invalid execAsk (use "off"|"on-miss"|"always")');
-      }
-      next.execAsk = normalized;
-    }
+  {
+    const r = applyNormalizedPatchField(entryRec, patchRec, "execAsk",
+      normalizeExecAsk, 'invalid execAsk (use "off"|"on-miss"|"always")');
+    if (!r.ok) return r;
   }
 
   if ("execNode" in patch) {
@@ -309,30 +286,16 @@ export async function applySessionsPatchToStore(params: {
     }
   }
 
-  if ("sendPolicy" in patch) {
-    const raw = patch.sendPolicy;
-    if (raw === null) {
-      delete next.sendPolicy;
-    } else if (raw !== undefined) {
-      const normalized = normalizeSendPolicy(String(raw));
-      if (!normalized) {
-        return invalid('invalid sendPolicy (use "allow"|"deny")');
-      }
-      next.sendPolicy = normalized;
-    }
+  {
+    const r = applyNormalizedPatchField(entryRec, patchRec, "sendPolicy",
+      normalizeSendPolicy, 'invalid sendPolicy (use "allow"|"deny")');
+    if (!r.ok) return r;
   }
 
-  if ("groupActivation" in patch) {
-    const raw = patch.groupActivation;
-    if (raw === null) {
-      delete next.groupActivation;
-    } else if (raw !== undefined) {
-      const normalized = normalizeGroupActivation(String(raw));
-      if (!normalized) {
-        return invalid('invalid groupActivation (use "mention"|"always")');
-      }
-      next.groupActivation = normalized;
-    }
+  {
+    const r = applyNormalizedPatchField(entryRec, patchRec, "groupActivation",
+      normalizeGroupActivation, 'invalid groupActivation (use "mention"|"always")');
+    if (!r.ok) return r;
   }
 
   store[storeKey] = next;
