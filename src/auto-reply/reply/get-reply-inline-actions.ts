@@ -25,12 +25,35 @@ export type InlineActionResult =
       abortedLastRun: boolean;
     };
 
-// oxlint-disable-next-line typescript/no-explicit-any
-function extractTextFromToolResult(result: any): string | null {
+/** Session-related context for inline action handling. */
+export type InlineSessionContext = {
+  sessionKey: string;
+  sessionEntry?: SessionEntry;
+  previousSessionEntry?: SessionEntry;
+  sessionStore?: Record<string, SessionEntry>;
+  sessionScope: Parameters<typeof buildStatusReply>[0]["sessionScope"];
+  storePath?: string;
+};
+
+/** Elevation/thinking resolution state. */
+export type InlineElevationContext = {
+  elevatedEnabled: boolean;
+  elevatedAllowed: boolean;
+  elevatedFailures: Array<{ gate: string; key: string }>;
+  resolvedThinkLevel: ThinkLevel | undefined;
+  resolvedVerboseLevel: VerboseLevel | undefined;
+  resolvedReasoningLevel: ReasoningLevel;
+  resolvedElevatedLevel: ElevatedLevel;
+  resolveDefaultThinkingLevel: Awaited<
+    ReturnType<typeof createModelSelectionState>
+  >["resolveDefaultThinkingLevel"];
+};
+
+function extractTextFromToolResult(result: unknown): string | null {
   if (!result || typeof result !== "object") {
     return null;
   }
-  const content = (result as { content?: unknown }).content;
+  const content = (result as Record<string, unknown>).content;
   if (typeof content === "string") {
     const trimmed = content.trim();
     return trimmed ? trimmed : null;
@@ -44,7 +67,7 @@ function extractTextFromToolResult(result: any): string | null {
     if (!block || typeof block !== "object") {
       continue;
     }
-    const rec = block as { type?: unknown; text?: unknown };
+    const rec = block as Record<string, unknown>;
     if (rec.type === "text" && typeof rec.text === "string") {
       parts.push(rec.text);
     }
@@ -60,12 +83,6 @@ export async function handleInlineActions(params: {
   cfg: OpenClawConfig;
   agentId: string;
   agentDir?: string;
-  sessionEntry?: SessionEntry;
-  previousSessionEntry?: SessionEntry;
-  sessionStore?: Record<string, SessionEntry>;
-  sessionKey: string;
-  storePath?: string;
-  sessionScope: Parameters<typeof buildStatusReply>[0]["sessionScope"];
   workspaceDir: string;
   isGroup: boolean;
   opts?: GetReplyOptions;
@@ -76,24 +93,15 @@ export async function handleInlineActions(params: {
   skillCommands?: SkillCommandSpec[];
   directives: InlineDirectives;
   cleanedBody: string;
-  elevatedEnabled: boolean;
-  elevatedAllowed: boolean;
-  elevatedFailures: Array<{ gate: string; key: string }>;
   defaultActivation: Parameters<typeof buildStatusReply>[0]["defaultGroupActivation"];
-  resolvedThinkLevel: ThinkLevel | undefined;
-  resolvedVerboseLevel: VerboseLevel | undefined;
-  resolvedReasoningLevel: ReasoningLevel;
-  resolvedElevatedLevel: ElevatedLevel;
-  resolveDefaultThinkingLevel: Awaited<
-    ReturnType<typeof createModelSelectionState>
-  >["resolveDefaultThinkingLevel"];
   provider: string;
   model: string;
   contextTokens: number;
   directiveAck?: ReplyPayload;
   abortedLastRun: boolean;
   skillFilter?: string[];
-}): Promise<InlineActionResult> {
+} & InlineSessionContext &
+  InlineElevationContext): Promise<InlineActionResult> {
   const {
     ctx,
     sessionCtx,
