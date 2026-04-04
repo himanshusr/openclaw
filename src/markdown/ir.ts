@@ -24,6 +24,10 @@ type MarkdownToken = {
   attrGet?: (name: string) => string | null;
 };
 
+function getTokenChildren(token: MarkdownToken): MarkdownToken[] {
+  return token.children ?? [];
+}
+
 export type MarkdownStyle = "bold" | "italic" | "strikethrough" | "code" | "code_block" | "spoiler";
 
 export type MarkdownStyleSpan = {
@@ -505,9 +509,11 @@ function renderTableAsCode(state: RenderState) {
 function renderTokens(tokens: MarkdownToken[], state: RenderState): void {
   for (const token of tokens) {
     switch (token.type) {
-      case "inline":
-        if (token.children) {
-          renderTokens(token.children, state);
+      case "inline": {
+          const children = getTokenChildren(token);
+          if (children.length > 0) {
+            renderTokens(children, state);
+          }
         }
         break;
       case "text":
