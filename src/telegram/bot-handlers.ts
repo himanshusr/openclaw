@@ -42,6 +42,12 @@ import {
 } from "./model-buttons.js";
 import { buildInlineKeyboard } from "./send.js";
 
+const TELEGRAM_TEXT_FRAGMENT_START_THRESHOLD_CHARS = 4000;
+const TELEGRAM_TEXT_FRAGMENT_MAX_GAP_MS = 1500;
+const TELEGRAM_TEXT_FRAGMENT_MAX_ID_GAP = 1;
+const TELEGRAM_TEXT_FRAGMENT_MAX_PARTS = 12;
+const TELEGRAM_TEXT_FRAGMENT_MAX_TOTAL_CHARS = 50_000;
+
 export const registerTelegramHandlers = ({
   cfg,
   accountId,
@@ -57,11 +63,6 @@ export const registerTelegramHandlers = ({
   processMessage,
   logger,
 }: RegisterTelegramHandlerParams) => {
-  const TELEGRAM_TEXT_FRAGMENT_START_THRESHOLD_CHARS = 4000;
-  const TELEGRAM_TEXT_FRAGMENT_MAX_GAP_MS = 1500;
-  const TELEGRAM_TEXT_FRAGMENT_MAX_ID_GAP = 1;
-  const TELEGRAM_TEXT_FRAGMENT_MAX_PARTS = 12;
-  const TELEGRAM_TEXT_FRAGMENT_MAX_TOTAL_CHARS = 50_000;
 
   const mediaGroupBuffer = new Map<string, MediaGroupEntry>();
   let mediaGroupProcessing: Promise<void> = Promise.resolve();
