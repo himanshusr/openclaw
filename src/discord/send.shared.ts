@@ -13,6 +13,7 @@ import { chunkDiscordTextWithMode } from "./chunk.js";
 import { fetchChannelPermissionsDiscord, isThreadChannelType } from "./send.permissions.js";
 import { DiscordSendError } from "./send.types.js";
 import { parseDiscordTarget, resolveDiscordTarget } from "./targets.js";
+import { resolveChannelToken } from "../channels/resolve-token.js";
 import { normalizeDiscordToken } from "./token.js";
 
 const DISCORD_TEXT_LIMIT = 2000;
@@ -43,17 +44,12 @@ type DiscordClientOpts = {
 };
 
 function resolveToken(params: { explicit?: string; accountId: string; fallbackToken?: string }) {
-  const explicit = normalizeDiscordToken(params.explicit);
-  if (explicit) {
-    return explicit;
-  }
-  const fallback = normalizeDiscordToken(params.fallbackToken);
-  if (!fallback) {
-    throw new Error(
-      `Discord bot token missing for account "${params.accountId}" (set discord.accounts.${params.accountId}.token or DISCORD_BOT_TOKEN for default).`,
-    );
-  }
-  return fallback;
+  return resolveChannelToken({
+    explicit: params.explicit,
+    fallback: params.fallbackToken,
+    normalize: normalizeDiscordToken,
+    errorMessage: `Discord bot token missing for account "${params.accountId}" (set discord.accounts.${params.accountId}.token or DISCORD_BOT_TOKEN for default).`,
+  });
 }
 
 function resolveRest(token: string, rest?: RequestClient) {
