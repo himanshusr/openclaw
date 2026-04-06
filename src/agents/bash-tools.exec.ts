@@ -105,17 +105,21 @@ function validateHostEnv(env: Record<string, string>): void {
     }
   }
 }
+const MAX_OUTPUT_CHARS_LIMIT = 200_000;
+const MIN_OUTPUT_CHARS = 1_000;
+const DEFAULT_PTY_COLS = 120;
+const DEFAULT_PTY_ROWS = 30;
 const DEFAULT_MAX_OUTPUT = clampNumber(
   readEnvInt("PI_BASH_MAX_OUTPUT_CHARS"),
-  200_000,
-  1_000,
-  200_000,
+  MAX_OUTPUT_CHARS_LIMIT,
+  MIN_OUTPUT_CHARS,
+  MAX_OUTPUT_CHARS_LIMIT,
 );
 const DEFAULT_PENDING_MAX_OUTPUT = clampNumber(
   readEnvInt("OPENCLAW_BASH_PENDING_MAX_OUTPUT_CHARS"),
-  200_000,
-  1_000,
-  200_000,
+  MAX_OUTPUT_CHARS_LIMIT,
+  MIN_OUTPUT_CHARS,
+  MAX_OUTPUT_CHARS_LIMIT,
 );
 const DEFAULT_PATH =
   process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -489,8 +493,8 @@ async function runExecProcess(opts: {
         cwd: opts.workdir,
         env: opts.env,
         name: process.env.TERM ?? "xterm-256color",
-        cols: 120,
-        rows: 30,
+        cols: DEFAULT_PTY_COLS,
+        rows: DEFAULT_PTY_ROWS,
       });
       stdin = {
         destroyed: false,
