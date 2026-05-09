@@ -506,185 +506,317 @@ function renderTableAsCode(state: RenderState) {
   }
 }
 
-function renderTokens(tokens: MarkdownToken[], state: RenderState): void {
-  for (const token of tokens) {
-    switch (token.type) {
-      case "inline": {
-          const children = getTokenChildren(token);
-          if (children.length > 0) {
-            renderTokens(children, state);
-          }
-        }
-        break;
-      case "text":
-        appendText(state, token.content ?? "");
-        break;
-      case "em_open":
-        openStyle(state, "italic");
-        break;
-      case "em_close":
-        closeStyle(state, "italic");
-        break;
-      case "strong_open":
-        openStyle(state, "bold");
-        break;
-      case "strong_close":
-        closeStyle(state, "bold");
-        break;
-      case "s_open":
-        openStyle(state, "strikethrough");
-        break;
-      case "s_close":
-        closeStyle(state, "strikethrough");
-        break;
-      case "code_inline":
-        renderInlineCode(state, token.content ?? "");
-        break;
-      case "spoiler_open":
-        if (state.enableSpoilers) {
-          openStyle(state, "spoiler");
-        }
-        break;
-      case "spoiler_close":
-        if (state.enableSpoilers) {
-          closeStyle(state, "spoiler");
-        }
-        break;
-      case "link_open": {
-        const href = getAttr(token, "href") ?? "";
-        const target = resolveRenderTarget(state);
-        target.linkStack.push({ href, labelStart: target.text.length });
-        break;
-      }
-      case "link_close":
-        handleLinkClose(state);
-        break;
-      case "image":
-        appendText(state, token.content ?? "");
-        break;
-      case "softbreak":
-      case "hardbreak":
-        appendText(state, "\n");
-        break;
-      case "paragraph_close":
-        appendParagraphSeparator(state);
-        break;
-      case "heading_open":
-        if (state.headingStyle === "bold") {
-          openStyle(state, "bold");
-        }
-        break;
-      case "heading_close":
-        if (state.headingStyle === "bold") {
-          closeStyle(state, "bold");
-        }
-        appendParagraphSeparator(state);
-        break;
-      case "blockquote_open":
-        if (state.blockquotePrefix) {
-          state.text += state.blockquotePrefix;
-        }
-        break;
-      case "blockquote_close":
-        state.text += "\n";
-        break;
-      case "bullet_list_open":
-        state.env.listStack.push({ type: "bullet", index: 0 });
-        break;
-      case "bullet_list_close":
-        state.env.listStack.pop();
-        break;
-      case "ordered_list_open": {
-        const start = Number(getAttr(token, "start") ?? "1");
-        state.env.listStack.push({ type: "ordered", index: start - 1 });
-        break;
-      }
-      case "ordered_list_close":
-        state.env.listStack.pop();
-        break;
-      case "list_item_open":
-        appendListPrefix(state);
-        break;
-      case "list_item_close":
-        state.text += "\n";
-        break;
-      case "code_block":
-      case "fence":
-        renderCodeBlock(state, token.content ?? "");
-        break;
-      case "html_block":
-      case "html_inline":
-        appendText(state, token.content ?? "");
-        break;
+/**
+ * 630:P3 #64 -- Composite-style node registry replaces the 44-case switch.
+ *
+ * Each token type has its own MarkdownNode (a `{ render(token, state, renderChildren) }`
+ * object). The registry IS the canonical token-type vocabulary; adding a new
+ * token type means adding one entry, not a switch case. The walker
+ * `renderTokens` is now the small dispatcher: it asks the registry for the
+ * node and delegates rendering. Closure access keeps all per-state mutators
+ * (appendText, openStyle, closeStyle, ...) private to this module while
+ * still letting each node "behave like its own object."
+ *
+ * Note: `renderChildren` is passed in as the recursion hook so node bodies
+ * never reach back into `renderTokens` directly -- this matches the
+ * Composite contract that a parent node renders its children via the
+ * walker, not via re-entry.
+ */
 
-      // Table handling
-      case "table_open":
-        if (state.tableMode !== "off") {
-          state.table = initTableState();
-          state.hasTables = true;
-        }
-        break;
-      case "table_close":
-        if (state.table) {
-          if (state.tableMode === "bullets") {
-            renderTableAsBullets(state);
-          } else if (state.tableMode === "code") {
-            renderTableAsCode(state);
-          }
-        }
-        state.table = null;
-        break;
-      case "thead_open":
-        if (state.table) {
-          state.table.inHeader = true;
-        }
-        break;
-      case "thead_close":
-        if (state.table) {
-          state.table.inHeader = false;
-        }
-        break;
-      case "tbody_open":
-      case "tbody_close":
-        break;
-      case "tr_open":
-        if (state.table) {
-          state.table.currentRow = [];
-        }
-        break;
-      case "tr_close":
-        if (state.table) {
-          if (state.table.inHeader) {
-            state.table.headers = state.table.currentRow;
-          } else {
-            state.table.rows.push(state.table.currentRow);
-          }
-          state.table.currentRow = [];
-        }
-        break;
-      case "th_open":
-      case "td_open":
-        if (state.table) {
-          state.table.currentCell = initRenderTarget();
-        }
-        break;
-      case "th_close":
-      case "td_close":
-        if (state.table?.currentCell) {
-          state.table.currentRow.push(finishTableCell(state.table.currentCell));
-          state.table.currentCell = null;
-        }
-        break;
+type RenderChildren = (children: MarkdownToken[]) => void;
+type MarkdownNode = {
+  render: (token: MarkdownToken, state: RenderState, renderChildren: RenderChildren) => void;
+};
 
-      case "hr":
-        state.text += "\n";
-        break;
-      default:
-        if (token.children) {
-          renderTokens(token.children, state);
-        }
-        break;
+const NODE_INLINE: MarkdownNode = {
+  render: (token, state, renderChildren) => {
+    const children = getTokenChildren(token);
+    if (children.length > 0) {
+      renderChildren(children);
     }
+  },
+};
+
+const NODE_TEXT: MarkdownNode = {
+  render: (token, state) => appendText(state, token.content ?? ""),
+};
+
+const NODE_IMAGE: MarkdownNode = {
+  render: (token, state) => appendText(state, token.content ?? ""),
+};
+
+const NODE_BREAK: MarkdownNode = {
+  render: (_token, state) => appendText(state, "\n"),
+};
+
+const NODE_HR: MarkdownNode = {
+  render: (_token, state) => {
+    state.text += "\n";
+  },
+};
+
+const NODE_HTML: MarkdownNode = {
+  render: (token, state) => appendText(state, token.content ?? ""),
+};
+
+const NODE_PARAGRAPH_CLOSE: MarkdownNode = {
+  render: (_token, state) => appendParagraphSeparator(state),
+};
+
+const NODE_HEADING_OPEN: MarkdownNode = {
+  render: (_token, state) => {
+    if (state.headingStyle === "bold") {
+      openStyle(state, "bold");
+    }
+  },
+};
+
+const NODE_HEADING_CLOSE: MarkdownNode = {
+  render: (_token, state) => {
+    if (state.headingStyle === "bold") {
+      closeStyle(state, "bold");
+    }
+    appendParagraphSeparator(state);
+  },
+};
+
+const NODE_BLOCKQUOTE_OPEN: MarkdownNode = {
+  render: (_token, state) => {
+    if (state.blockquotePrefix) {
+      state.text += state.blockquotePrefix;
+    }
+  },
+};
+
+const NODE_BLOCKQUOTE_CLOSE: MarkdownNode = {
+  render: (_token, state) => {
+    state.text += "\n";
+  },
+};
+
+function makeStyleOpenNode(style: MarkdownStyle): MarkdownNode {
+  return { render: (_token, state) => openStyle(state, style) };
+}
+
+function makeStyleCloseNode(style: MarkdownStyle): MarkdownNode {
+  return { render: (_token, state) => closeStyle(state, style) };
+}
+
+const NODE_SPOILER_OPEN: MarkdownNode = {
+  render: (_token, state) => {
+    if (state.enableSpoilers) {
+      openStyle(state, "spoiler");
+    }
+  },
+};
+
+const NODE_SPOILER_CLOSE: MarkdownNode = {
+  render: (_token, state) => {
+    if (state.enableSpoilers) {
+      closeStyle(state, "spoiler");
+    }
+  },
+};
+
+const NODE_CODE_INLINE: MarkdownNode = {
+  render: (token, state) => renderInlineCode(state, token.content ?? ""),
+};
+
+const NODE_CODE_BLOCK: MarkdownNode = {
+  render: (token, state) => renderCodeBlock(state, token.content ?? ""),
+};
+
+const NODE_LINK_OPEN: MarkdownNode = {
+  render: (token, state) => {
+    const href = getAttr(token, "href") ?? "";
+    const target = resolveRenderTarget(state);
+    target.linkStack.push({ href, labelStart: target.text.length });
+  },
+};
+
+const NODE_LINK_CLOSE: MarkdownNode = { render: (_token, state) => handleLinkClose(state) };
+
+const NODE_BULLET_LIST_OPEN: MarkdownNode = {
+  render: (_token, state) => state.env.listStack.push({ type: "bullet", index: 0 }),
+};
+
+const NODE_BULLET_LIST_CLOSE: MarkdownNode = {
+  render: (_token, state) => {
+    state.env.listStack.pop();
+  },
+};
+
+const NODE_ORDERED_LIST_OPEN: MarkdownNode = {
+  render: (token, state) => {
+    const start = Number(getAttr(token, "start") ?? "1");
+    state.env.listStack.push({ type: "ordered", index: start - 1 });
+  },
+};
+
+const NODE_ORDERED_LIST_CLOSE: MarkdownNode = {
+  render: (_token, state) => {
+    state.env.listStack.pop();
+  },
+};
+
+const NODE_LIST_ITEM_OPEN: MarkdownNode = {
+  render: (_token, state) => appendListPrefix(state),
+};
+
+const NODE_LIST_ITEM_CLOSE: MarkdownNode = {
+  render: (_token, state) => {
+    state.text += "\n";
+  },
+};
+
+const NODE_TABLE_OPEN: MarkdownNode = {
+  render: (_token, state) => {
+    if (state.tableMode !== "off") {
+      state.table = initTableState();
+      state.hasTables = true;
+    }
+  },
+};
+
+const NODE_TABLE_CLOSE: MarkdownNode = {
+  render: (_token, state) => {
+    if (state.table) {
+      if (state.tableMode === "bullets") {
+        renderTableAsBullets(state);
+      } else if (state.tableMode === "code") {
+        renderTableAsCode(state);
+      }
+    }
+    state.table = null;
+  },
+};
+
+const NODE_THEAD_OPEN: MarkdownNode = {
+  render: (_token, state) => {
+    if (state.table) {
+      state.table.inHeader = true;
+    }
+  },
+};
+
+const NODE_THEAD_CLOSE: MarkdownNode = {
+  render: (_token, state) => {
+    if (state.table) {
+      state.table.inHeader = false;
+    }
+  },
+};
+
+const NODE_NOOP: MarkdownNode = { render: () => undefined };
+
+const NODE_TR_OPEN: MarkdownNode = {
+  render: (_token, state) => {
+    if (state.table) {
+      state.table.currentRow = [];
+    }
+  },
+};
+
+const NODE_TR_CLOSE: MarkdownNode = {
+  render: (_token, state) => {
+    if (state.table) {
+      if (state.table.inHeader) {
+        state.table.headers = state.table.currentRow;
+      } else {
+        state.table.rows.push(state.table.currentRow);
+      }
+      state.table.currentRow = [];
+    }
+  },
+};
+
+const NODE_CELL_OPEN: MarkdownNode = {
+  render: (_token, state) => {
+    if (state.table) {
+      state.table.currentCell = initRenderTarget();
+    }
+  },
+};
+
+const NODE_CELL_CLOSE: MarkdownNode = {
+  render: (_token, state) => {
+    if (state.table?.currentCell) {
+      state.table.currentRow.push(finishTableCell(state.table.currentCell));
+      state.table.currentCell = null;
+    }
+  },
+};
+
+const NODE_DEFAULT: MarkdownNode = {
+  render: (token, _state, renderChildren) => {
+    if (token.children) {
+      renderChildren(token.children);
+    }
+  },
+};
+
+/**
+ * The Composite registry. The keys ARE the canonical token-type
+ * vocabulary the renderer understands; adding a new token type means
+ * adding a new MarkdownNode object + one map entry.
+ */
+const NODE_REGISTRY: Readonly<Record<string, MarkdownNode>> = {
+  inline: NODE_INLINE,
+  text: NODE_TEXT,
+  em_open: makeStyleOpenNode("italic"),
+  em_close: makeStyleCloseNode("italic"),
+  strong_open: makeStyleOpenNode("bold"),
+  strong_close: makeStyleCloseNode("bold"),
+  s_open: makeStyleOpenNode("strikethrough"),
+  s_close: makeStyleCloseNode("strikethrough"),
+  code_inline: NODE_CODE_INLINE,
+  spoiler_open: NODE_SPOILER_OPEN,
+  spoiler_close: NODE_SPOILER_CLOSE,
+  link_open: NODE_LINK_OPEN,
+  link_close: NODE_LINK_CLOSE,
+  image: NODE_IMAGE,
+  softbreak: NODE_BREAK,
+  hardbreak: NODE_BREAK,
+  paragraph_close: NODE_PARAGRAPH_CLOSE,
+  heading_open: NODE_HEADING_OPEN,
+  heading_close: NODE_HEADING_CLOSE,
+  blockquote_open: NODE_BLOCKQUOTE_OPEN,
+  blockquote_close: NODE_BLOCKQUOTE_CLOSE,
+  bullet_list_open: NODE_BULLET_LIST_OPEN,
+  bullet_list_close: NODE_BULLET_LIST_CLOSE,
+  ordered_list_open: NODE_ORDERED_LIST_OPEN,
+  ordered_list_close: NODE_ORDERED_LIST_CLOSE,
+  list_item_open: NODE_LIST_ITEM_OPEN,
+  list_item_close: NODE_LIST_ITEM_CLOSE,
+  code_block: NODE_CODE_BLOCK,
+  fence: NODE_CODE_BLOCK,
+  html_block: NODE_HTML,
+  html_inline: NODE_HTML,
+  table_open: NODE_TABLE_OPEN,
+  table_close: NODE_TABLE_CLOSE,
+  thead_open: NODE_THEAD_OPEN,
+  thead_close: NODE_THEAD_CLOSE,
+  tbody_open: NODE_NOOP,
+  tbody_close: NODE_NOOP,
+  tr_open: NODE_TR_OPEN,
+  tr_close: NODE_TR_CLOSE,
+  th_open: NODE_CELL_OPEN,
+  td_open: NODE_CELL_OPEN,
+  th_close: NODE_CELL_CLOSE,
+  td_close: NODE_CELL_CLOSE,
+  hr: NODE_HR,
+};
+
+/** Test seam: returns the node responsible for a given token type (or the default). */
+export function nodeForTokenType(type: string): MarkdownNode {
+  return NODE_REGISTRY[type] ?? NODE_DEFAULT;
+}
+
+function renderTokens(tokens: MarkdownToken[], state: RenderState): void {
+  const renderChildren: RenderChildren = (children) => renderTokens(children, state);
+  for (const token of tokens) {
+    const node = NODE_REGISTRY[token.type] ?? NODE_DEFAULT;
+    node.render(token, state, renderChildren);
   }
 }
 
