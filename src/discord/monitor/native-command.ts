@@ -54,6 +54,10 @@ import {
   resolveDiscordUserAllowed,
 } from "./allow-list.js";
 import { resolveDiscordChannelInfo } from "./message-utils.js";
+import {
+  classifyDiscordChannelKind,
+  selectDiscordCommandAuthStrategy,
+} from "./native-command-auth.js";
 import { resolveDiscordSenderIdentity } from "./sender-identity.js";
 import { resolveDiscordThreadParentInfo } from "./threading.js";
 
@@ -579,49 +583,69 @@ async function dispatchDiscordCommandInteraction(params: {
   const dmPolicy = discordConfig?.dm?.policy ?? "pairing";
   let commandAuthorized = true;
   if (isDirectMessage) {
-    if (!dmEnabled || dmPolicy === "disabled") {
-      await respond("Discord DMs are disabled.");
+    // 630:P3 #55 -- delegate to the DM authorization Strategy. The
+    // strategy owns the dmPolicy/dmEnabled/pairing decision tree;
+    // this dispatcher only resolves the inputs (allow-list lookup,
+    // pairing-store call) and renders the resulting decision.
+    const storeAllowFrom = await readChannelAllowFromStore("discord").catch(() => []);
+    const effectiveAllowFrom = [...(discordConfig?.dm?.allowFrom ?? []), ...storeAllowFrom];
+    const allowList = normalizeDiscordAllowList(effectiveAllowFrom, ["discord:", "user:", "pk:"]);
+    const dmAllowed = allowList
+      ? allowListMatches(allowList, {
+          id: sender.id,
+          name: sender.name,
+          tag: sender.tag,
+        })
+      : false;
+    const authStrategy = selectDiscordCommandAuthStrategy(
+      classifyDiscordChannelKind({ isDirectMessage: true, isGroupDm: false }),
+    );
+    const decision = await authStrategy.authorize({
+      sender: { id: sender.id, name: sender.name, tag: sender.tag },
+      dmPolicy:
+        dmPolicy === "open" || dmPolicy === "pairing" || dmPolicy === "disabled"
+          ? dmPolicy
+          : "allowlist",
+      dmEnabled,
+      isGroupDm: false,
+      groupDmEnabled: discordConfig?.dm?.groupEnabled ?? true,
+      dmAllowed,
+      startPairing: async ({ sender: pairingSender }) => {
+        const { code, created } = await upsertChannelPairingRequest({
+          channel: "discord",
+          id: pairingSender.id,
+          meta: {
+            tag: pairingSender.tag,
+            name: pairingSender.name,
+          },
+        });
+        return { code, created };
+      },
+    });
+    if (decision.allowed === false) {
+      commandAuthorized = false;
+      if (decision.replyMessage !== null) {
+        // For pairing replies, preserve the legacy buildPairingReply
+        // formatting so existing channel docs match.
+        if (decision.reason === "dm-pairing-pending") {
+          // Reconstruct via buildPairingReply to keep wording identical
+          // to the previous code path.
+          const code = decision.replyMessage.match(/Pairing code:\s*(\S+)/)?.[1] ?? "";
+          await respond(
+            buildPairingReply({
+              channel: "discord",
+              idLine: `Your Discord user id: ${user.id}`,
+              code,
+            }),
+            { ephemeral: decision.ephemeral === true },
+          );
+        } else {
+          await respond(decision.replyMessage, { ephemeral: decision.ephemeral === true });
+        }
+      }
       return;
     }
-    if (dmPolicy !== "open") {
-      const storeAllowFrom = await readChannelAllowFromStore("discord").catch(() => []);
-      const effectiveAllowFrom = [...(discordConfig?.dm?.allowFrom ?? []), ...storeAllowFrom];
-      const allowList = normalizeDiscordAllowList(effectiveAllowFrom, ["discord:", "user:", "pk:"]);
-      const permitted = allowList
-        ? allowListMatches(allowList, {
-            id: sender.id,
-            name: sender.name,
-            tag: sender.tag,
-          })
-        : false;
-      if (!permitted) {
-        commandAuthorized = false;
-        if (dmPolicy === "pairing") {
-          const { code, created } = await upsertChannelPairingRequest({
-            channel: "discord",
-            id: user.id,
-            meta: {
-              tag: sender.tag,
-              name: sender.name,
-            },
-          });
-          if (created) {
-            await respond(
-              buildPairingReply({
-                channel: "discord",
-                idLine: `Your Discord user id: ${user.id}`,
-                code,
-              }),
-              { ephemeral: true },
-            );
-          }
-        } else {
-          await respond("You are not authorized to use this command.", { ephemeral: true });
-        }
-        return;
-      }
-      commandAuthorized = true;
-    }
+    commandAuthorized = decision.commandAuthorized;
   }
   if (!isDirectMessage) {
     const channelUsers = channelConfig?.users ?? guildInfo?.users;
