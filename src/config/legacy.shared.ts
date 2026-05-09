@@ -10,6 +10,89 @@ export type LegacyConfigMigration = {
   apply: (raw: Record<string, unknown>, changes: string[]) => void;
 };
 
+// 630:P3 Issue #65 -- Command pattern.
+//
+// A LegacyConfigMigration is conceptually a Command: it has an id
+// (handle), a describe (human label), and an apply method that mutates
+// the receiver (the raw config). Today, however, each migration writes
+// its change descriptions into a shared `changes: string[]` passed by
+// the runner -- the Spaghetti Code shape that #65 targets, because the
+// "did this command apply anything?" signal is smeared across the
+// callee mutating the caller's array.
+//
+// MigrationCommand is the typed Command interface. execute() takes a
+// MigrationContext (per-invocation state, isolated to this command)
+// and returns a structured MigrationResult that the Invoker aggregates.
+// Adapters below let the Invoker run either an old-style
+// LegacyConfigMigration or a new MigrationCommand uniformly, so the
+// existing migration objects keep working unchanged. New migrations
+// can be authored as MigrationCommands directly, which is what the
+// follow-up consolidation (Section 7.3 of the Part-1 report) targets.
+
+export type MigrationContext = {
+  /** The mutable raw config the command may rewrite in place. */
+  raw: Record<string, unknown>;
+};
+
+export type MigrationResult = {
+  /** True iff the command actually mutated `raw`. */
+  applied: boolean;
+  /** Human-readable change descriptions to surface to the user. */
+  changes: string[];
+};
+
+export type MigrationCommand = {
+  id: string;
+  describe: string;
+  execute(ctx: MigrationContext): MigrationResult;
+};
+
+/**
+ * Adapt a legacy { id, describe, apply } migration to the
+ * MigrationCommand interface. apply() pushes its change descriptions
+ * into a per-invocation array we own, so the Invoker can decide whether
+ * the command did anything based on the array length.
+ */
+export function adaptLegacyMigration(legacy: LegacyConfigMigration): MigrationCommand {
+  return {
+    id: legacy.id,
+    describe: legacy.describe,
+    execute(ctx) {
+      const changes: string[] = [];
+      legacy.apply(ctx.raw, changes);
+      return { applied: changes.length > 0, changes };
+    },
+  };
+}
+
+/**
+ * Invoker: runs the given commands in order against a freshly cloned
+ * copy of `raw`, aggregates their results, and returns the final
+ * mutated config (or null if nothing changed).
+ */
+export function runMigrations(
+  raw: unknown,
+  commands: ReadonlyArray<MigrationCommand>,
+): { next: Record<string, unknown> | null; changes: string[] } {
+  if (!raw || typeof raw !== "object") {
+    return { next: null, changes: [] };
+  }
+  const ctx: MigrationContext = {
+    raw: structuredClone(raw) as Record<string, unknown>,
+  };
+  const allChanges: string[] = [];
+  for (const command of commands) {
+    const result = command.execute(ctx);
+    if (result.applied) {
+      allChanges.push(...result.changes);
+    }
+  }
+  if (allChanges.length === 0) {
+    return { next: null, changes: [] };
+  }
+  return { next: ctx.raw, changes: allChanges };
+}
+
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === "object" && !Array.isArray(value));
 
