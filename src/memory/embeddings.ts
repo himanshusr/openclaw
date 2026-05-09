@@ -1,10 +1,17 @@
 import type { Llama, LlamaEmbeddingContext, LlamaModel } from "node-llama-cpp";
 import fsSync from "node:fs";
 import type { OpenClawConfig } from "../config/config.js";
+import type { GeminiEmbeddingClient } from "./embeddings-gemini.js";
+import type { OpenAiEmbeddingClient } from "./embeddings-openai.js";
+import type { VoyageEmbeddingClient } from "./embeddings-voyage.js";
 import { resolveUserPath } from "../utils.js";
-import { createGeminiEmbeddingProvider, type GeminiEmbeddingClient } from "./embeddings-gemini.js";
-import { createOpenAiEmbeddingProvider, type OpenAiEmbeddingClient } from "./embeddings-openai.js";
-import { createVoyageEmbeddingProvider, type VoyageEmbeddingClient } from "./embeddings-voyage.js";
+import {
+  AUTO_FALLBACK_ORDER,
+  createEmbeddingProviderRegistry,
+  createLocalEmbeddingFactory,
+  type EmbeddingProviderId,
+  type EmbeddingProviderProduct,
+} from "./embedding-provider-factory.js";
 import { importNodeLlamaCpp } from "./node-llama.js";
 
 function sanitizeAndNormalizeEmbedding(vec: number[]): number[] {
@@ -125,31 +132,39 @@ async function createLocalEmbeddingProvider(
   };
 }
 
+// 630:P3 #63 -- the embeddings family lives in the Abstract Factory
+// registry (one factory per provider). createEmbeddingProvider keeps its
+// public signature; the body is now a registry lookup + the
+// AUTO_FALLBACK_ORDER walk, no provider-specific switch.
+const EMBEDDING_REGISTRY = createEmbeddingProviderRegistry(
+  createLocalEmbeddingFactory({
+    createLocalProvider: (options) =>
+      createLocalEmbeddingProvider(options as EmbeddingProviderOptions),
+    formatLocalSetupError,
+  }),
+);
+
+async function createWithFactory(
+  id: EmbeddingProviderId,
+  options: EmbeddingProviderOptions,
+): Promise<EmbeddingProviderProduct> {
+  const factory = EMBEDDING_REGISTRY.get(id);
+  if (!factory) {
+    throw new Error(`Unknown embeddings provider: ${id}`);
+  }
+  return factory.create(options);
+}
+
+function formatPrimaryEmbeddingError(err: unknown, provider: EmbeddingProviderId): string {
+  const factory = EMBEDDING_REGISTRY.get(provider);
+  return factory ? factory.formatSetupError(err) : formatError(err);
+}
+
 export async function createEmbeddingProvider(
   options: EmbeddingProviderOptions,
 ): Promise<EmbeddingProviderResult> {
   const requestedProvider = options.provider;
   const fallback = options.fallback;
-
-  const createProvider = async (id: "openai" | "local" | "gemini" | "voyage") => {
-    if (id === "local") {
-      const provider = await createLocalEmbeddingProvider(options);
-      return { provider };
-    }
-    if (id === "gemini") {
-      const { provider, client } = await createGeminiEmbeddingProvider(options);
-      return { provider, gemini: client };
-    }
-    if (id === "voyage") {
-      const { provider, client } = await createVoyageEmbeddingProvider(options);
-      return { provider, voyage: client };
-    }
-    const { provider, client } = await createOpenAiEmbeddingProvider(options);
-    return { provider, openAi: client };
-  };
-
-  const formatPrimaryError = (err: unknown, provider: "openai" | "local" | "gemini" | "voyage") =>
-    provider === "local" ? formatLocalSetupError(err) : formatError(err);
 
   if (requestedProvider === "auto") {
     const missingKeyErrors: string[] = [];
@@ -157,19 +172,19 @@ export async function createEmbeddingProvider(
 
     if (canAutoSelectLocal(options)) {
       try {
-        const local = await createProvider("local");
+        const local = await createWithFactory("local", options);
         return { ...local, requestedProvider };
       } catch (err) {
         localError = formatLocalSetupError(err);
       }
     }
 
-    for (const provider of ["openai", "gemini", "voyage"] as const) {
+    for (const provider of AUTO_FALLBACK_ORDER) {
       try {
-        const result = await createProvider(provider);
+        const result = await createWithFactory(provider, options);
         return { ...result, requestedProvider };
       } catch (err) {
-        const message = formatPrimaryError(err, provider);
+        const message = formatPrimaryEmbeddingError(err, provider);
         if (isMissingApiKeyError(err)) {
           missingKeyErrors.push(message);
           continue;
@@ -186,13 +201,13 @@ export async function createEmbeddingProvider(
   }
 
   try {
-    const primary = await createProvider(requestedProvider);
+    const primary = await createWithFactory(requestedProvider, options);
     return { ...primary, requestedProvider };
   } catch (primaryErr) {
-    const reason = formatPrimaryError(primaryErr, requestedProvider);
+    const reason = formatPrimaryEmbeddingError(primaryErr, requestedProvider);
     if (fallback && fallback !== "none" && fallback !== requestedProvider) {
       try {
-        const fallbackResult = await createProvider(fallback);
+        const fallbackResult = await createWithFactory(fallback, options);
         return {
           ...fallbackResult,
           requestedProvider,
