@@ -51,6 +51,7 @@ import {
   resolveWorkdir,
   truncateMiddle,
 } from "./bash-tools.shared.js";
+import { buildExecToolConfigFromDefaults } from "./exec-tool-builder.js";
 import { buildCursorPositionResponse, stripDsrRequests } from "./pty-dsr.js";
 import { getShellConfig, sanitizeBinaryOutput } from "./shell-utils.js";
 import { callGatewayTool } from "./tools/gateway.js";
@@ -303,7 +304,7 @@ function normalizeNotifyOutput(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function normalizePathPrepend(entries?: string[]) {
+export function normalizePathPrepend(entries?: string[]) {
   if (!Array.isArray(entries)) {
     return [];
   }
@@ -403,7 +404,7 @@ function createApprovalSlug(id: string) {
   return id.slice(0, APPROVAL_SLUG_LENGTH);
 }
 
-function resolveApprovalRunningNoticeMs(value?: number) {
+export function resolveApprovalRunningNoticeMs(value?: number) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return DEFAULT_APPROVAL_RUNNING_NOTICE_MS;
   }
@@ -805,27 +806,20 @@ export function createExecTool(
   defaults?: ExecToolDefaults,
   // oxlint-disable-next-line typescript/no-explicit-any
 ): AgentTool<any, ExecToolDetails> {
-  const defaultBackgroundMs = clampNumber(
-    defaults?.backgroundMs ?? readEnvInt("PI_BASH_YIELD_MS"),
-    10_000,
-    10,
-    120_000,
-  );
-  const allowBackground = defaults?.allowBackground ?? true;
-  const defaultTimeoutSec =
-    typeof defaults?.timeoutSec === "number" && defaults.timeoutSec > 0
-      ? defaults.timeoutSec
-      : 1800;
-  const defaultPathPrepend = normalizePathPrepend(defaults?.pathPrepend);
-  const safeBins = resolveSafeBins(defaults?.safeBins);
-  const notifyOnExit = defaults?.notifyOnExit !== false;
-  const notifySessionKey = defaults?.sessionKey?.trim() || undefined;
-  const approvalRunningNoticeMs = resolveApprovalRunningNoticeMs(defaults?.approvalRunningNoticeMs);
-  // Derive agentId only when sessionKey is an agent session key.
-  const parsedAgentSession = parseAgentSessionKey(defaults?.sessionKey);
-  const agentId =
-    defaults?.agentId ??
-    (parsedAgentSession ? resolveAgentIdFromSessionKey(defaults?.sessionKey) : undefined);
+  // 630:P3 #61 -- the configure phase is the Builder; the executor below
+  // consumes a frozen ExecToolConfig instead of closure-scoped `let`s.
+  const cfg = buildExecToolConfigFromDefaults(defaults);
+  const {
+    defaultBackgroundMs,
+    allowBackground,
+    defaultTimeoutSec,
+    defaultPathPrepend,
+    safeBins,
+    notifyOnExit,
+    notifySessionKey,
+    approvalRunningNoticeMs,
+    agentId,
+  } = cfg;
 
   return {
     name: "exec",
