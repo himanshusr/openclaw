@@ -1,5 +1,6 @@
 import chokidar from "chokidar";
 import type { OpenClawConfig, ConfigFileSnapshot, GatewayReloadMode } from "../config/config.js";
+import type { GatewayStateEmitter } from "./state-emitter.js";
 import { type ChannelId, listChannelPlugins } from "../channels/plugins/index.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 
@@ -264,6 +265,14 @@ export function startGatewayConfigReloader(opts: {
     error: (msg: string) => void;
   };
   watchPath: string;
+  /**
+   * 630:P3 #58 -- optional Observer Subject. When provided, the
+   * reloader publishes a configChanged event after every successful
+   * config diff so subscribers (CLI status, channel adapters, etc.)
+   * can react without polling shared state. Optional to keep this PR
+   * non-breaking; the reloader works fine when no emitter is passed.
+   */
+  stateEmitter?: GatewayStateEmitter;
 }): GatewayConfigReloader {
   let currentConfig = opts.initialConfig;
   let settings = resolveGatewayReloadSettings(currentConfig);
@@ -308,11 +317,21 @@ export function startGatewayConfigReloader(opts: {
       }
       const nextConfig = snapshot.config;
       const changedPaths = diffConfigPaths(currentConfig, nextConfig);
+      const prevConfig = currentConfig;
       currentConfig = nextConfig;
       settings = resolveGatewayReloadSettings(nextConfig);
       if (changedPaths.length === 0) {
         return;
       }
+
+      // 630:P3 #58 -- broadcast to Observer subscribers, if any. We
+      // publish before the hot-reload / restart path runs so consumers
+      // see the new snapshot at the same moment the reload starts.
+      opts.stateEmitter?.publishConfigChange({
+        prev: prevConfig,
+        next: nextConfig,
+        changedPaths,
+      });
 
       opts.log.info(`config change detected; evaluating reload (${changedPaths.join(", ")})`);
       const plan = buildGatewayReloadPlan(changedPaths);
