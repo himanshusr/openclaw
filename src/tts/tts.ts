@@ -12,7 +12,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { elevenLabsTTS } from "./elevenlabs.js";
 import type { ReplyPayload } from "../auto-reply/types.js";
 import type { ChannelId } from "../channels/plugins/types.js";
 import type { OpenClawConfig } from "../config/config.js";
@@ -35,6 +34,7 @@ import { normalizeChannelId } from "../channels/plugins/index.js";
 import { logVerbose } from "../globals.js";
 import { isVoiceCompatibleAudio } from "../media/audio.js";
 import { CONFIG_DIR, resolveUserPath } from "../utils.js";
+import { elevenLabsTTS, isValidVoiceId } from "./elevenlabs.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_TTS_MAX_LENGTH = 1500;
@@ -1022,6 +1022,117 @@ async function edgeTTS(params: {
   await tts.ttsPromise(text, outputPath);
 }
 
+// ===========================================================================
+// 630:P3 Issue #60 -- Factory Method for TTS provider dispatch.
+//
+// Both textToSpeech and textToSpeechTelephony used to repeat the same
+// per-provider if/else ladder. The Factory Method pattern below replaces
+// each ladder with a typed dispatch table that returns the right
+// per-provider synthesizer function. Adding a new provider is now one
+// new entry per factory rather than two near-identical edits across the
+// two top-level loops. Edge stays inline in textToSpeech because it has
+// special file-output semantics (writes audio to a temp dir directly,
+// rather than returning a Buffer).
+// ===========================================================================
+
+type TtsBufferContext = {
+  text: string;
+  apiKey: string;
+  config: ResolvedTtsConfig;
+  output: ReturnType<typeof resolveOutputFormat>;
+  overrides?: TtsDirectiveOverrides;
+};
+
+type TtsBufferSynthesizer = (ctx: TtsBufferContext) => Promise<Buffer>;
+
+// Factory entries: typed map keyed by provider name. The map IS the
+// factory -- adding a new buffer-style provider means appending one
+// entry, with no dispatch-side edits needed.
+const TTS_BUFFER_FACTORIES: Partial<Record<TtsProvider, TtsBufferSynthesizer>> = {
+  elevenlabs: async ({ text, apiKey, config, output, overrides }) => {
+    const elevenOverrides = overrides?.elevenlabs;
+    const voiceSettings = {
+      ...config.elevenlabs.voiceSettings,
+      ...elevenOverrides?.voiceSettings,
+    };
+    return elevenLabsTTS({
+      text,
+      apiKey,
+      baseUrl: config.elevenlabs.baseUrl,
+      voiceId: elevenOverrides?.voiceId ?? config.elevenlabs.voiceId,
+      modelId: elevenOverrides?.modelId ?? config.elevenlabs.modelId,
+      outputFormat: output.elevenlabs,
+      seed: elevenOverrides?.seed ?? config.elevenlabs.seed,
+      applyTextNormalization:
+        elevenOverrides?.applyTextNormalization ?? config.elevenlabs.applyTextNormalization,
+      languageCode: elevenOverrides?.languageCode ?? config.elevenlabs.languageCode,
+      voiceSettings,
+      timeoutMs: config.timeoutMs,
+    });
+  },
+  openai: async ({ text, apiKey, config, output, overrides }) =>
+    openaiTTS({
+      text,
+      apiKey,
+      model: overrides?.openai?.model ?? config.openai.model,
+      voice: overrides?.openai?.voice ?? config.openai.voice,
+      responseFormat: output.openai,
+      timeoutMs: config.timeoutMs,
+    }),
+};
+
+/** Factory Method entry point for buffer-returning providers. */
+function createTtsBufferSynthesizer(provider: TtsProvider): TtsBufferSynthesizer | null {
+  return TTS_BUFFER_FACTORIES[provider] ?? null;
+}
+
+type TtsTelephonyContext = {
+  text: string;
+  apiKey: string;
+  config: ResolvedTtsConfig;
+};
+
+type TtsTelephonyResultPart = { buffer: Buffer; outputFormat: string; sampleRate: number };
+
+type TtsTelephonySynthesizer = (ctx: TtsTelephonyContext) => Promise<TtsTelephonyResultPart>;
+
+const TTS_TELEPHONY_FACTORIES: Partial<Record<TtsProvider, TtsTelephonySynthesizer>> = {
+  elevenlabs: async ({ text, apiKey, config }) => {
+    const output = TELEPHONY_OUTPUT.elevenlabs;
+    const buffer = await elevenLabsTTS({
+      text,
+      apiKey,
+      baseUrl: config.elevenlabs.baseUrl,
+      voiceId: config.elevenlabs.voiceId,
+      modelId: config.elevenlabs.modelId,
+      outputFormat: output.format,
+      seed: config.elevenlabs.seed,
+      applyTextNormalization: config.elevenlabs.applyTextNormalization,
+      languageCode: config.elevenlabs.languageCode,
+      voiceSettings: config.elevenlabs.voiceSettings,
+      timeoutMs: config.timeoutMs,
+    });
+    return { buffer, outputFormat: output.format, sampleRate: output.sampleRate };
+  },
+  openai: async ({ text, apiKey, config }) => {
+    const output = TELEPHONY_OUTPUT.openai;
+    const buffer = await openaiTTS({
+      text,
+      apiKey,
+      model: config.openai.model,
+      voice: config.openai.voice,
+      responseFormat: output.format,
+      timeoutMs: config.timeoutMs,
+    });
+    return { buffer, outputFormat: output.format, sampleRate: output.sampleRate };
+  },
+};
+
+/** Factory Method entry point for telephony providers. */
+function createTtsTelephonySynthesizer(provider: TtsProvider): TtsTelephonySynthesizer | null {
+  return TTS_TELEPHONY_FACTORIES[provider] ?? null;
+}
+
 export async function textToSpeech(params: {
   text: string;
   cfg: OpenClawConfig;
@@ -1125,42 +1236,19 @@ export async function textToSpeech(params: {
         continue;
       }
 
-      let audioBuffer: Buffer;
-      if (provider === "elevenlabs") {
-        const voiceIdOverride = params.overrides?.elevenlabs?.voiceId;
-        const modelIdOverride = params.overrides?.elevenlabs?.modelId;
-        const voiceSettings = {
-          ...config.elevenlabs.voiceSettings,
-          ...params.overrides?.elevenlabs?.voiceSettings,
-        };
-        const seedOverride = params.overrides?.elevenlabs?.seed;
-        const normalizationOverride = params.overrides?.elevenlabs?.applyTextNormalization;
-        const languageOverride = params.overrides?.elevenlabs?.languageCode;
-        audioBuffer = await elevenLabsTTS({
-          text: params.text,
-          apiKey,
-          baseUrl: config.elevenlabs.baseUrl,
-          voiceId: voiceIdOverride ?? config.elevenlabs.voiceId,
-          modelId: modelIdOverride ?? config.elevenlabs.modelId,
-          outputFormat: output.elevenlabs,
-          seed: seedOverride ?? config.elevenlabs.seed,
-          applyTextNormalization: normalizationOverride ?? config.elevenlabs.applyTextNormalization,
-          languageCode: languageOverride ?? config.elevenlabs.languageCode,
-          voiceSettings,
-          timeoutMs: config.timeoutMs,
-        });
-      } else {
-        const openaiModelOverride = params.overrides?.openai?.model;
-        const openaiVoiceOverride = params.overrides?.openai?.voice;
-        audioBuffer = await openaiTTS({
-          text: params.text,
-          apiKey,
-          model: openaiModelOverride ?? config.openai.model,
-          voice: openaiVoiceOverride ?? config.openai.voice,
-          responseFormat: output.openai,
-          timeoutMs: config.timeoutMs,
-        });
+      // 630:P3 #60 -- Factory Method dispatch.
+      const synth = createTtsBufferSynthesizer(provider);
+      if (!synth) {
+        lastError = `${provider}: unsupported buffer provider`;
+        continue;
       }
+      const audioBuffer = await synth({
+        text: params.text,
+        apiKey,
+        config,
+        output,
+        overrides: params.overrides,
+      });
 
       const latencyMs = Date.now() - providerStart;
 
@@ -1227,49 +1315,21 @@ export async function textToSpeechTelephony(params: {
         continue;
       }
 
-      if (provider === "elevenlabs") {
-        const output = TELEPHONY_OUTPUT.elevenlabs;
-        const audioBuffer = await elevenLabsTTS({
-          text: params.text,
-          apiKey,
-          baseUrl: config.elevenlabs.baseUrl,
-          voiceId: config.elevenlabs.voiceId,
-          modelId: config.elevenlabs.modelId,
-          outputFormat: output.format,
-          seed: config.elevenlabs.seed,
-          applyTextNormalization: config.elevenlabs.applyTextNormalization,
-          languageCode: config.elevenlabs.languageCode,
-          voiceSettings: config.elevenlabs.voiceSettings,
-          timeoutMs: config.timeoutMs,
-        });
-
-        return {
-          success: true,
-          audioBuffer,
-          latencyMs: Date.now() - providerStart,
-          provider,
-          outputFormat: output.format,
-          sampleRate: output.sampleRate,
-        };
+      // 630:P3 #60 -- Factory Method dispatch (telephony path).
+      const synth = createTtsTelephonySynthesizer(provider);
+      if (!synth) {
+        lastError = `${provider}: unsupported for telephony`;
+        continue;
       }
-
-      const output = TELEPHONY_OUTPUT.openai;
-      const audioBuffer = await openaiTTS({
-        text: params.text,
-        apiKey,
-        model: config.openai.model,
-        voice: config.openai.voice,
-        responseFormat: output.format,
-        timeoutMs: config.timeoutMs,
-      });
+      const result = await synth({ text: params.text, apiKey, config });
 
       return {
         success: true,
-        audioBuffer,
+        audioBuffer: result.buffer,
         latencyMs: Date.now() - providerStart,
         provider,
-        outputFormat: output.format,
-        sampleRate: output.sampleRate,
+        outputFormat: result.outputFormat,
+        sampleRate: result.sampleRate,
       };
     } catch (err) {
       const error = err as Error;
@@ -1429,6 +1489,9 @@ export async function maybeApplyTtsToPayload(params: {
   return nextPayload;
 }
 
+// 630:P3 #60 -- restore _test re-export of isValidVoiceId after upstream
+// commit 87b2de341 moved the implementation into elevenlabs.ts but left
+// this test surface broken on main.
 export const _test = {
   isValidVoiceId,
   isValidOpenAIVoice,
