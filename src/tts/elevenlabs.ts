@@ -2,7 +2,8 @@ import type { ResolvedTtsConfig } from "./tts.js";
 
 const DEFAULT_ELEVENLABS_BASE_URL = "https://api.elevenlabs.io";
 
-function isValidVoiceId(voiceId: string): boolean {
+// Exported so the legacy tts.ts test surface can re-export it via _test.
+export function isValidVoiceId(voiceId: string): boolean {
   return /^[a-zA-Z0-9]{10,40}$/.test(voiceId);
 }
 
